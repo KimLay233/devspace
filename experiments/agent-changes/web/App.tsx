@@ -96,7 +96,10 @@ export function App() {
             <span className="flex size-9 items-center justify-center rounded-lg bg-accent text-[#102015]"><Terminal className="size-5" strokeWidth={2.4} /></span>
             <div><div className="text-sm font-semibold tracking-tight">DevSpace <span className="font-normal text-muted">/ Agent Changes</span></div><div className="mt-0.5 text-[10px] uppercase tracking-[.18em] text-muted">Cloudflare Artifacts experiment</div></div>
           </div>
-          <span className="inline-flex items-center gap-2 rounded-full border border-edge px-3 py-1.5 text-xs text-muted"><span className="size-1.5 rounded-full bg-accent" />Hackathon V0</span>
+          <div className="flex items-center gap-3">
+            {token && <button type="button" onClick={() => { setToken(""); setTokenDraft(""); queryClient.clear(); }} className="text-xs text-muted underline-offset-4 hover:text-white hover:underline">Change token</button>}
+            <span className="inline-flex items-center gap-2 rounded-full border border-edge px-3 py-1.5 text-xs text-muted"><span className="size-1.5 rounded-full bg-accent" />Hackathon V0</span>
+          </div>
         </div>
       </header>
 
@@ -212,9 +215,9 @@ function WorkspaceView(props: WorkspaceProps) {
         ) : (
           <>
             <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-              <div><p className="text-sm font-medium">Proposal {selected.id.slice(0, 7)}</p><p className="mt-1 text-xs text-muted">{selectedDiff?.files.length ?? 0} changed files · automated tests not recorded</p></div>
+              <div><p className="text-sm font-medium">Proposal {selected.id.slice(0, 7)}</p><p className="mt-1 text-xs text-muted">{selectedDiff ? `${selectedDiff.files.length} changed files` : "Loading changed files"} · automated tests not recorded</p></div>
               {selected.integrationStatus === "merged" ? <span className="flex items-center gap-2 text-xs text-accent"><ShieldCheck className="size-4" />Merged</span> :
-                <button className={primary} disabled={accept.isPending || Boolean(selected.integrationStatus)} onClick={() => accept.mutate(selected.id)}><GitMerge className="size-4" />{accept.isPending ? "Integrating…" : "Accept proposal"}</button>}
+                <button className={primary} disabled={accept.isPending || Boolean(selected.integrationStatus) || !selectedDiff || selectedDiff.truncated || proposals.isLoading || Boolean(proposals.error)} onClick={() => accept.mutate(selected.id)}><GitMerge className="size-4" />{accept.isPending ? "Integrating…" : "Accept proposal"}</button>}
             </div>
             <ErrorLine error={proposals.error ?? accept.error} />
             {selected.integrationStatus === "conflicted" && <p className="mb-3 text-sm text-amber-200">Git reported a merge conflict. No changes were pushed to the base repository.</p>}
