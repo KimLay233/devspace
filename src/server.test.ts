@@ -681,6 +681,46 @@ test("HTTP endpoint serves modern MCP and stateless legacy clients", async (t) =
   assert.match(await legacyTools.text(), /"open_workspace"/);
 });
 
+test("experimental Code Mode executes over stateless HTTP MCP requests", async (t) => {
+  const { root, localBaseUrl, accessToken } = await httpServerFixture(
+    t,
+    "devspace-codemode-http-test-",
+    true,
+  );
+  await writeFile(join(root, "note.txt"), "through HTTP\n");
+
+  const listed = await postModernMcp(localBaseUrl, accessToken, "tools/list", {});
+  const inventory = await listed.json() as { result?: { tools?: Array<{ name: string }> } };
+  assert.deepEqual(inventory.result?.tools?.map((tool) => tool.name).sort(), [
+    "cancel_execution", "execute", "open_workspace", "poll_execution", "show_changes",
+  ]);
+
+  const opened = await postModernMcp(localBaseUrl, accessToken, "tools/call", {
+    name: "open_workspace",
+    arguments: { path: root },
+  });
+  const response = await opened.json() as {
+    result?: { structuredContent?: { workspace_id?: string; code_mode?: { tool_signatures: string } } };
+  };
+  const workspaceId = response.result?.structuredContent?.workspace_id;
+  assert.ok(workspaceId);
+  assert.match(response.result?.structuredContent?.code_mode?.tool_signatures ?? "", /tools/);
+
+  const call = await postModernMcp(localBaseUrl, accessToken, "tools/call", {
+    name: "execute",
+    arguments: {
+      workspace_id: workspaceId,
+      code: 'return (await tools.read({ path: "note.txt" })).result.trim()',
+    },
+  });
+  assert.equal(call.status, 200, await call.clone().text());
+  const result = await call.json() as {
+    result?: { structuredContent?: { status?: string; value?: string } };
+  };
+  assert.equal(result.result?.structuredContent?.status, "completed");
+  assert.equal(result.result?.structuredContent?.value, "through HTTP");
+});
+
 test("server shutdown waits for an active MCP tool call", async (t) => {
   const { root, localBaseUrl, accessToken, running } = await httpServerFixture(
     t,
@@ -775,10 +815,11 @@ interface HttpServerFixture {
 async function httpServerFixture(
   t: TestContext,
   prefix: string,
+  experimentalCodeMode = false,
 ): Promise<HttpServerFixture> {
   const root = await mkdtemp(join(tmpdir(), prefix));
   const ownerToken = "test-owner-token-that-is-long-enough";
-  const config = loadConfig(writeTestDevspaceConfig(join(root, ".config"), {
+  const config = { ...loadConfig(writeTestDevspaceConfig(join(root, ".config"), {
     server: {
       port: 1,
       publicBaseUrl: "https://example.test",
@@ -788,7 +829,7 @@ async function httpServerFixture(
       worktreeRoot: join(root, ".worktrees"),
     },
     storage: { stateDir: join(root, ".state") },
-  }));
+  })), experimentalCodeMode };
   const running = createServer(config, { incomingArtifactAdapters: [] });
   const httpServer = running.app.listen(0, "127.0.0.1");
   await new Promise<void>((resolve) => httpServer.once("listening", resolve));
