@@ -1,12 +1,12 @@
 import { resolve } from "node:path";
-import type { ToolMode } from "./config-schema.js";
+import type { ToolMode, StaticOAuthClient } from "./config-schema.js";
 import { expandHomePath } from "./roots.js";
 import type { LoggingConfig } from "./logger.js";
 import type { OAuthConfig } from "./oauth-provider.js";
 import { devspaceAgentsDir, devspaceSkillsDir, loadDevspaceFiles } from "./user-config.js";
 import type { SubagentsConfig } from "./local-agent-config.js";
 
-export type { ToolMode } from "./config-schema.js";
+export type { ToolMode, StaticOAuthClient } from "./config-schema.js";
 
 export interface ServerConfig {
   configDir: string;
@@ -29,6 +29,38 @@ export interface ServerConfig {
   subagents: SubagentsConfig;
   agentDir: string;
   logging: LoggingConfig;
+}
+
+function resolveStaticClients(
+  stored: StaticOAuthClient[] = [],
+  env: NodeJS.ProcessEnv = process.env,
+): StaticOAuthClient[] {
+  const clients = [...stored];
+  const envClientId = (env.DEVSPACE_GEMINI_CLIENT_ID ?? env.DEVSPACE_STATIC_CLIENT_ID)?.trim();
+  if (envClientId) {
+    const envSecret = (env.DEVSPACE_GEMINI_CLIENT_SECRET ?? env.DEVSPACE_STATIC_CLIENT_SECRET)?.trim();
+    const envRedirect = (env.DEVSPACE_GEMINI_REDIRECT_URI ?? env.DEVSPACE_STATIC_CLIENT_REDIRECT_URI)?.trim();
+    const existingIndex = clients.findIndex((c) => c.clientId === envClientId);
+    if (existingIndex >= 0) {
+      const existing = clients[existingIndex];
+      const uris = envRedirect && !existing.redirectUris.includes(envRedirect)
+        ? [...existing.redirectUris, envRedirect]
+        : existing.redirectUris;
+      clients[existingIndex] = {
+        ...existing,
+        clientSecret: envSecret ?? existing.clientSecret,
+        redirectUris: uris,
+      };
+    } else {
+      clients.push({
+        clientId: envClientId,
+        clientSecret: envSecret,
+        clientName: "Gemini",
+        redirectUris: envRedirect ? [envRedirect] : [],
+      });
+    }
+  }
+  return clients;
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
@@ -61,6 +93,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
       scopes: stored.oauth.scopes,
       allowedResourceUrls: stored.oauth.allowedResourceUrls,
       allowedRedirectHosts: stored.oauth.allowedRedirectHosts,
+      staticClients: resolveStaticClients(stored.oauth.staticClients, env),
     },
     allowedRoots: normalizePaths(stored.workspaces.allowedRoots, [process.cwd()]),
     allowedHosts: normalizeAllowedHosts(derivedAllowedHosts),

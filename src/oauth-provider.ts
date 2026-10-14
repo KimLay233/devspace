@@ -12,6 +12,8 @@ import type {
 import { checkResourceAllowed, resourceUrlFromServerUrl } from "@modelcontextprotocol/sdk/shared/auth-utils.js";
 import { SqliteOAuthClientsStore, SqliteOAuthStore } from "./oauth-store.js";
 
+import type { StaticOAuthClient } from "./config-schema.js";
+
 export interface OAuthConfig {
   ownerToken: string;
   accessTokenTtlSeconds: number;
@@ -19,6 +21,7 @@ export interface OAuthConfig {
   scopes: string[];
   allowedResourceUrls: string[];
   allowedRedirectHosts: string[];
+  staticClients?: StaticOAuthClient[];
 }
 
 interface AuthorizationCodeRecord {
@@ -90,7 +93,7 @@ function formHtml(params: {
   <body>
     <main>
       <h1>Connect DevSpace</h1>
-      <p class="warning">Only approve this if you are intentionally connecting your own ChatGPT or MCP client to this local machine.</p>
+      <p class="warning">Only approve this if you are intentionally connecting your own ChatGPT, Gemini, or MCP client to this local machine.</p>
       ${error}
       <dl>
         <dt>Client</dt><dd>${htmlEscape(params.clientName)}</dd>
@@ -128,8 +131,12 @@ export class SingleUserOAuthProvider implements OAuthServerProvider {
     this.allowedResourceUrls = new Set(
       config.allowedResourceUrls.map((url) => resourceUrlFromServerUrl(url).href),
     );
-    this.oauthStore = new SqliteOAuthStore(stateDir);
+    this.oauthStore = new SqliteOAuthStore(stateDir, config.staticClients ?? []);
     this.clientsStore = new SqliteOAuthClientsStore(this.oauthStore, config.allowedRedirectHosts);
+  }
+
+  registerStaticClientRedirectUriIfAllowed(clientId: string, redirectUri: string): boolean {
+    return this.oauthStore.addRedirectUriForStaticClient(clientId, redirectUri, this.config.allowedRedirectHosts);
   }
 
   async authorize(
@@ -137,21 +144,30 @@ export class SingleUserOAuthProvider implements OAuthServerProvider {
     params: AuthorizationParams,
     res: Response,
   ): Promise<void> {
-    if (!params.resource || !this.isResourceAllowed(params.resource)) {
+    const effectiveResource = params.resource ?? this.resourceServerUrl;
+    if (!this.isResourceAllowed(effectiveResource)) {
       throw new InvalidRequestError("Invalid or missing OAuth resource");
     }
-    if (!requestedScopesAllowed(params.scopes ?? [], this.config.scopes)) {
-      throw new InvalidRequestError("Requested scope is not supported");
-    }
+
+    const requested = params.scopes ?? [];
+    const effectiveScopes = requested.length > 0 && requested.some((s) => this.config.scopes.includes(s))
+      ? requested.filter((s) => this.config.scopes.includes(s))
+      : this.config.scopes;
+
+    const effectiveParams: AuthorizationParams = {
+      ...params,
+      resource: effectiveResource,
+      scopes: effectiveScopes,
+    };
 
     if (res.req.method !== "POST") {
       res.status(200).setHeader("Content-Type", "text/html; charset=utf-8");
       res.send(
         formHtml({
           clientName: client.client_name ?? client.client_id,
-          scopes: params.scopes ?? this.config.scopes,
-          resource: params.resource,
-          fields: authorizationFormFields(client, params),
+          scopes: effectiveScopes,
+          resource: effectiveResource,
+          fields: authorizationFormFields(client, effectiveParams),
         }),
       );
       return;
@@ -164,9 +180,9 @@ export class SingleUserOAuthProvider implements OAuthServerProvider {
         formHtml({
           error: "The Owner password was not accepted.",
           clientName: client.client_name ?? client.client_id,
-          scopes: params.scopes ?? this.config.scopes,
-          resource: params.resource,
-          fields: authorizationFormFields(client, params),
+          scopes: effectiveScopes,
+          resource: effectiveResource,
+          fields: authorizationFormFields(client, effectiveParams),
         }),
       );
       return;
@@ -175,7 +191,7 @@ export class SingleUserOAuthProvider implements OAuthServerProvider {
     const code = `code-${randomUUID()}`;
     this.codes.set(code, {
       clientId: client.client_id,
-      params,
+      params: effectiveParams,
       expiresAtMs: Date.now() + CODE_TTL_MS,
     });
 
@@ -204,12 +220,13 @@ export class SingleUserOAuthProvider implements OAuthServerProvider {
     if (redirectUri && redirectUri !== record.params.redirectUri) {
       throw new InvalidGrantError("redirect_uri does not match the authorization request");
     }
-    if (resource && (!record.params.resource || !sameResource(resource, record.params.resource))) {
+    if (resource && record.params.resource && !sameResource(resource, record.params.resource)) {
       throw new InvalidGrantError("Invalid resource");
     }
 
     this.codes.delete(authorizationCode);
-    return this.issueTokens(client.client_id, record.params.scopes ?? this.config.scopes, record.params.resource);
+    const tokenResource = resource ?? record.params.resource ?? this.resourceServerUrl;
+    return this.issueTokens(client.client_id, record.params.scopes ?? this.config.scopes, tokenResource);
   }
 
   async exchangeRefreshToken(
@@ -255,7 +272,7 @@ export class SingleUserOAuthProvider implements OAuthServerProvider {
       clientId: record.clientId,
       scopes: record.scopes,
       expiresAt: record.expiresAt,
-      resource: record.resource ? new URL(record.resource) : undefined,
+      resource: record.resource ? new URL(record.resource) : this.resourceServerUrl,
     };
   }
 
@@ -324,7 +341,7 @@ export class SingleUserOAuthProvider implements OAuthServerProvider {
 
     return {
       access_token: accessToken,
-      token_type: "bearer",
+      token_type: "Bearer",
       expires_in: this.config.accessTokenTtlSeconds,
       refresh_token: refreshToken,
       scope: scopes.join(" "),

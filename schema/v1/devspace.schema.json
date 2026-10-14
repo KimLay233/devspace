@@ -354,13 +354,55 @@
           "default": [
             "chatgpt.com",
             "localhost",
-            "127.0.0.1"
+            "127.0.0.1",
+            "oauth-redirect.googleusercontent.com",
+            "*.googleusercontent.com",
+            "*.google.com"
           ],
           "minItems": 1,
           "type": "array",
           "items": {
             "type": "string",
             "minLength": 1
+          }
+        },
+        "staticClients": {
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "clientId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "clientSecret": {
+                "type": "string",
+                "minLength": 1
+              },
+              "clientName": {
+                "type": "string"
+              },
+              "redirectUris": {
+                "default": [],
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "scopes": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            },
+            "required": [
+              "clientId"
+            ],
+            "additionalProperties": false
           }
         }
       },

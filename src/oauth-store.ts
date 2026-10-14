@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { OAuthRegisteredClientsStore } from "@modelcontextprotocol/sdk/server/auth/clients.js";
 import { InvalidRequestError } from "@modelcontextprotocol/sdk/server/auth/errors.js";
 import type { OAuthClientInformationFull } from "@modelcontextprotocol/sdk/shared/auth.js";
+import type { StaticOAuthClient } from "./config-schema.js";
 import { openDatabase, type DatabaseHandle } from "./db/client.js";
 
 export interface PersistedAccessTokenRecord {
@@ -25,7 +26,7 @@ export interface PersistedTokenPair {
   refreshToken: PersistedRefreshTokenRecord;
 }
 
-function redirectHostAllowed(redirectUri: string, allowedHosts: string[]): boolean {
+export function redirectHostAllowed(redirectUri: string, allowedHosts: string[]): boolean {
   let parsed: URL;
   try {
     parsed = new URL(redirectUri);
@@ -33,24 +34,131 @@ function redirectHostAllowed(redirectUri: string, allowedHosts: string[]): boole
     return false;
   }
 
-  if (["localhost", "127.0.0.1", "[::1]"].includes(parsed.hostname)) return true;
-  return allowedHosts.includes(parsed.hostname);
+  const hostname = parsed.hostname.toLowerCase();
+  if (["localhost", "127.0.0.1", "[::1]"].includes(hostname)) return true;
+
+  return allowedHosts.some((pattern) => {
+    const p = pattern.trim().toLowerCase();
+    if (!p) return false;
+    if (p === "*") return true;
+    if (p === hostname) return true;
+    if (p.startsWith("*.")) {
+      const suffix = p.slice(2);
+      return hostname === suffix || hostname.endsWith(`.${suffix}`);
+    }
+    if (p.startsWith(".")) {
+      const suffix = p.slice(1);
+      return hostname === suffix || hostname.endsWith(`.${suffix}`);
+    }
+    return false;
+  });
 }
 
 export class SqliteOAuthStore {
   private readonly database: DatabaseHandle;
+  private readonly staticClients = new Map<string, OAuthClientInformationFull>();
 
-  constructor(stateDir: string) {
+  constructor(stateDir: string, staticClients: StaticOAuthClient[] = []) {
     this.database = openDatabase(stateDir);
     this.deleteExpiredTokens(Math.floor(Date.now() / 1000));
+    const now = Math.floor(Date.now() / 1000);
+    for (const sc of staticClients) {
+      const full: OAuthClientInformationFull = {
+        client_id: sc.clientId,
+        client_secret: sc.clientSecret,
+        client_name: sc.clientName ?? sc.clientId,
+        redirect_uris: [...sc.redirectUris],
+        token_endpoint_auth_method: sc.clientSecret ? "client_secret_post" : "none",
+        grant_types: ["authorization_code", "refresh_token"],
+        response_types: ["code"],
+        client_id_issued_at: now,
+      };
+      this.staticClients.set(sc.clientId, full);
+      this.database.sqlite
+        .prepare(
+          `insert into oauth_clients (client_id, client_json, issued_at)
+           values (?, ?, ?)
+           on conflict(client_id) do update set
+             client_json = excluded.client_json,
+             issued_at = excluded.issued_at`,
+        )
+        .run(full.client_id, JSON.stringify(full), now);
+    }
   }
 
   getClient(clientId: string): OAuthClientInformationFull | undefined {
+    let staticClient = this.staticClients.get(clientId);
+
+    if (!staticClient) {
+      const normalized = clientId.trim().replace(/\/+$/, "").toLowerCase();
+      for (const [key, val] of this.staticClients.entries()) {
+        if (key.trim().replace(/\/+$/, "").toLowerCase() === normalized) {
+          staticClient = val;
+          break;
+        }
+      }
+    }
+
+    if (!staticClient && this.staticClients.size === 1) {
+      staticClient = this.staticClients.values().next().value;
+    }
+
+    if (staticClient) {
+      const resolved: OAuthClientInformationFull = {
+        ...staticClient,
+        client_id: clientId,
+        redirect_uris: [...staticClient.redirect_uris],
+      };
+
+      if (clientId !== staticClient.client_id) {
+        this.database.sqlite
+          .prepare(
+            `insert into oauth_clients (client_id, client_json, issued_at)
+             values (?, ?, ?)
+             on conflict(client_id) do update set
+               client_json = excluded.client_json,
+               issued_at = excluded.issued_at`,
+          )
+          .run(clientId, JSON.stringify(resolved), Math.floor(Date.now() / 1000));
+      }
+
+      return resolved;
+    }
+
     const row = this.database.sqlite
       .prepare("select client_json from oauth_clients where client_id = ?")
       .get(clientId) as { client_json: string } | undefined;
 
     return row ? (JSON.parse(row.client_json) as OAuthClientInformationFull) : undefined;
+  }
+
+  addRedirectUriForStaticClient(
+    clientId: string,
+    redirectUri: string,
+    allowedRedirectHosts: string[],
+  ): boolean {
+    let client = this.staticClients.get(clientId);
+    if (!client) {
+      const normalized = clientId.trim().replace(/\/+$/, "").toLowerCase();
+      for (const [key, val] of this.staticClients.entries()) {
+        if (key.trim().replace(/\/+$/, "").toLowerCase() === normalized) {
+          client = val;
+          break;
+        }
+      }
+    }
+    if (!client && this.staticClients.size === 1) {
+      client = this.staticClients.values().next().value;
+    }
+    if (!client) return false;
+    if (!redirectHostAllowed(redirectUri, allowedRedirectHosts)) return false;
+    if (!client.redirect_uris.includes(redirectUri)) {
+      client.redirect_uris.push(redirectUri);
+      this.database.sqlite
+        .prepare("update oauth_clients set client_json = ? where client_id = ?")
+        .run(JSON.stringify(client), client.client_id);
+    }
+    return true;
   }
 
   registerClient(
@@ -201,6 +309,10 @@ export class SqliteOAuthClientsStore implements OAuthRegisteredClientsStore {
     client: Omit<OAuthClientInformationFull, "client_id" | "client_id_issued_at">,
   ): OAuthClientInformationFull {
     return this.store.registerClient(client, this.allowedRedirectHosts);
+  }
+
+  addRedirectUriForStaticClient(clientId: string, redirectUri: string): boolean {
+    return this.store.addRedirectUriForStaticClient(clientId, redirectUri, this.allowedRedirectHosts);
   }
 }
 

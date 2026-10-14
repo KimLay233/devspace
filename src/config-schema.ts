@@ -50,6 +50,16 @@ const loggingConfigSchema = z.object({
   shellCommands: z.boolean().default(false),
 }).strict().prefault({});
 
+export const staticOAuthClientSchema = z.object({
+  clientId: z.string().trim().min(1),
+  clientSecret: z.string().trim().min(1).optional(),
+  clientName: z.string().trim().optional(),
+  redirectUris: z.array(z.string().trim().min(1)).default([]),
+  scopes: z.array(z.string().trim().min(1)).optional(),
+}).strict();
+
+export type StaticOAuthClient = z.infer<typeof staticOAuthClientSchema>;
+
 const oauthConfigSchema = z.object({
   accessTokenTtlSeconds: z.number().int().positive().default(60 * 60),
   refreshTokenTtlSeconds: z.number().int().positive().default(30 * 24 * 60 * 60),
@@ -65,7 +75,11 @@ const oauthConfigSchema = z.object({
     "chatgpt.com",
     "localhost",
     "127.0.0.1",
+    "oauth-redirect.googleusercontent.com",
+    "*.googleusercontent.com",
+    "*.google.com",
   ]),
+  staticClients: z.array(staticOAuthClientSchema).default([]),
 }).strict().prefault({});
 
 export const devspaceConfigSchema = z.object({

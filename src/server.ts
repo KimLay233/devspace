@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readFileSync, appendFileSync } from "node:fs";
 import { access, realpath } from "node:fs/promises";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { createMcpExpressApp } from "@modelcontextprotocol/sdk/server/express.js";
@@ -885,6 +886,15 @@ export function createServer(
       });
     });
 
+    next();
+  });
+
+  app.use("/authorize", express.urlencoded({ extended: false }), (req, _res, next) => {
+    const clientId = String(req.query.client_id ?? req.body?.client_id ?? "").trim();
+    const redirectUri = String(req.query.redirect_uri ?? req.body?.redirect_uri ?? "").trim();
+    if (redirectUri) {
+      oauthProvider.registerStaticClientRedirectUriIfAllowed(clientId, redirectUri);
+    }
     next();
   });
 
